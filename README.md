@@ -1,2 +1,3 @@
 # IMP4ARM
-Image Processing for ARM platform
+Image Processing for ARM platform.
+WeChat:ShellAlbert.
