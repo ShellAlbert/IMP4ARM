@@ -48,8 +48,7 @@ SOURCES += \
     udt4/src/packet.cpp \
     udt4/src/queue.cpp \
     udt4/src/window.cpp \
-    zserverthread.cpp \
-    zh264encthread.cpp
+    zserverthread.cpp
 
 HEADERS += \
     zcamdevice.h \
@@ -77,12 +76,11 @@ HEADERS += \
     udt4/src/queue.h \
     udt4/src/udt.h \
     udt4/src/window.h \
-    zserverthread.h \
-    zh264encthread.h
+    zserverthread.h
 
 RESOURCES += \
     resource.qrc
 
 LIBS += -L/usr/local/lib64 -lopencv_dnn -lopencv_ml -lopencv_objdetect -lopencv_shape -lopencv_stitching -lopencv_superres -lopencv_videostab -lopencv_calib3d -lopencv_features2d -lopencv_highgui -lopencv_videoio -lopencv_imgcodecs -lopencv_video -lopencv_photo -lopencv_imgproc -lopencv_flann -lopencv_core -lopencv_xfeatures2d
 
-LIBS += -ljpeg -lx264
+LIBS += -ljpeg

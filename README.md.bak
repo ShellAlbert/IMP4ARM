@@ -23,6 +23,6 @@ To reduce cpu load and keep time low, i resize image to 1/2 of original.
  
 ## H264 Encode Thread
 input:CSP_I420   
-I frame to make sure the decoder can decode frames without others frames help.   
+I frame to make sure the decoder can decode frames without other frames help.   
 
 ## TCP Transmit Thread

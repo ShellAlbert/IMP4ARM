@@ -182,76 +182,28 @@ int YUYVToRGB_table(unsigned char *yuv, unsigned char *rgb, unsigned int width,u
     }
     return 0;
 }
-ZImgCapThread::ZImgCapThread(QString devNodeName,qint32 nPreWidth,qint32 nPreHeight,qint32 nPreFps,bool bMainCamera)
+ZImgCapThread::ZImgCapThread(QString devNodeName,qint32 nPreWidth,qint32 nPreHeight,qint32 nPreFps)
 {
     this->m_devName=devNodeName;
     this->m_nPreWidth=nPreWidth;
     this->m_nPreHeight=nPreHeight;
     this->m_nPreFps=nPreFps;
-    this->m_bMainCamera=bMainCamera;
 
-    //capture image to local display queue.
-    this->m_queueDisp=NULL;
-     this->m_semaDispUsed=NULL;
-     this->m_semaDispFree=NULL;
-    //capture image to process queue.
-     this->m_queueProcess=NULL;
-     this->m_semaProcessUsed=NULL;
-     this->m_semaProcessFree=NULL;
-    //capture yuv to yuv queue.
-     this->m_queueYUV=NULL;
-     this->m_semaYUVUsed=NULL;
-     this->m_semaYUVFree=NULL;
+    this->m_pImgData=NULL;
+    this->m_pImgTemp=NULL;
+    this->m_bRunning=false;
+
+    this->m_cam=new ZCAMDevice(this->m_devName,this->m_nPreWidth,this->m_nPreHeight,this->m_nPreFps);
+    connect(this->m_cam,SIGNAL(ZSigMsg(QString,qint32)),this,SIGNAL(ZSigMsg(QString,qint32)),Qt::DirectConnection);
 }
 ZImgCapThread::~ZImgCapThread()
 {
-
-}
-qint32 ZImgCapThread::ZBindDispQueue(QQueue<QImage> *queueDisp,QSemaphore *semaDispUsed,QSemaphore *semaDispFree)
-{
-    this->m_queueDisp=queueDisp;
-    this->m_semaDispUsed=semaDispUsed;
-    this->m_semaDispFree=semaDispFree;
-    return 0;
-}
-qint32 ZImgCapThread::ZBindProcessQueue(QQueue<QImage> *queueProcess,QSemaphore *semaProcessUsed,QSemaphore *semaProcessFree)
-{
-    this->m_queueProcess=queueProcess;
-    this->m_semaProcessUsed=semaProcessUsed;
-    this->m_semaProcessFree=semaProcessFree;
-    return 0;
-}
-qint32 ZImgCapThread::ZBindYUVQueue(QQueue<QByteArray> *queueYUV,QSemaphore *semaYUVUsed,QSemaphore *semaYUVFree)
-{
-    this->m_queueYUV=queueYUV;
-    this->m_semaYUVUsed=semaYUVUsed;
-    this->m_semaYUVFree=semaYUVFree;
-    return 0;
+    disconnect(this->m_cam,SIGNAL(ZSigMsg(QString,qint32)),this,SIGNAL(ZSigMsg(QString,qint32)));
+    delete this->m_cam;
+    this->m_cam=NULL;
 }
 qint32 ZImgCapThread::ZStartThread()
 {
-    //check disp queue.
-    if(this->m_queueDisp==NULL || this->m_semaDispUsed==NULL || this->m_semaDispFree==NULL)
-    {
-        qDebug()<<"<error>:no bind display queue,cannot start thread.";
-        return -1;
-    }
-    //check process queue.
-    if(this->m_queueProcess==NULL || this->m_semaProcessUsed==NULL || this->m_semaProcessFree==NULL)
-    {
-        qDebug()<<"<error>:no bind process queue,cannot start thread.";
-        return -1;
-    }
-    //check the yuv queue if i am the main camera.
-    if(this->m_bMainCamera)
-    {
-        if(this->m_queueYUV==NULL || this->m_semaYUVUsed==NULL || this->m_semaYUVFree==NULL)
-        {
-            qDebug()<<"<error>:no bind yuv queue,cannot start thread.";
-            return -1;
-        }
-    }
-
     this->start();
     return 0;
 }
@@ -278,115 +230,197 @@ QString ZImgCapThread::ZGetDevName()
 }
 bool ZImgCapThread::ZIsRunning()
 {
-    return true;
+    return this->m_bRunning;
 }
 QString ZImgCapThread::ZGetCAMID()
 {
     return this->m_cam->ZGetCAMID();
 }
+void ZImgCapThread::ZSlotCheckGblStartFlag()
+{
+    if(gGblPara.m_bGblStartFlag)
+    {
+        if(!this->m_timerCap->isActive())
+        {
+            qDebug()<<"detected start flag,start cap thread:"<<this->m_devName;
+            this->m_timerCap->start(10);
+        }
+    }else{
+        if(this->m_timerCap->isActive())
+        {
+            qDebug()<<"detected stop flag,stop cap thread:"<<this->m_devName;
+            this->m_timerCap->stop();
+        }
+    }
+}
+void ZImgCapThread::ZSlotDoCapture()
+{
+    //if the global request exit flag was set.
+    //when we exit event-loop.
+    if(gGblPara.m_bGblRst2Exit)
+    {
+        this->exit(0);
+        return;
+    }
 
+    qint32 nLen;
+    qint64 nStartTs,nEndTs;
+    if(gGblPara.m_bCaptureLog)
+    {
+        nStartTs=QDateTime::currentDateTime().toMSecsSinceEpoch();
+        qDebug()<<this->m_devName<<" start at "<<nStartTs;
+    }
+    if(this->m_cam->ZGetFrame((void**)&this->m_pImgTemp,(size_t*)&nLen)<0)
+    {
+        emit this->ZSigMsg(tr("failed to get frame,len error:%1").arg(nLen),Log_Msg_Error);
+        //here we set global request exit flag to help other thread to exit.
+        gGblPara.m_bGblRst2Exit=true;
+        return;
+    }
+    //memset(this->m_pImgData,0,nSingleImgSize);
+    //this->convYUV2RGBBuffer(this->m_pImgTemp,this->m_pImgData,this->m_cam->ZGetImgWidth(),this->m_cam->ZGetImgHeight());
+
+    YUYVToRGB_table(this->m_pImgTemp,this->m_pImgData,this->m_cam->ZGetImgWidth(),this->m_cam->ZGetImgHeight());
+    //qint32 nSingleImgSize=this->m_cam->ZGetImgWidth()*this->m_cam->ZGetImgHeight()*3*sizeof(char);
+    //this->m_QImg->loadFromData((uchar*)this->m_pImgData,nSingleImgSize);
+
+    //build a RGB888 QImage object.
+    QImage newImg((uchar*)this->m_pImgData,this->m_cam->ZGetImgWidth(),this->m_cam->ZGetImgHeight(),QImage::Format_RGB888);
+    emit this->ZSigCapImg(newImg);
+    this->m_cam->ZUnGetFrame();
+
+    if(gGblPara.m_bCaptureLog)
+    {
+        nEndTs=QDateTime::currentDateTime().toMSecsSinceEpoch();
+        qDebug()<<this->m_devName<<" end at "<<nEndTs<<",cost "<<nEndTs-nStartTs<<"ms";
+    }
+}
 void ZImgCapThread::run()
 {
-    ZCAMDevice *camDev=new ZCAMDevice(this->m_devName,this->m_nPreWidth,this->m_nPreHeight,this->m_nPreFps);
-    if(camDev->ZOpenCAM()<0)
-    {
-        qDebug()<<"<error>:failed to open cam device "<<this->m_devName;
-        return;
-    }
-    if(camDev->ZInitCAM()<0)
-    {
-        qDebug()<<"<error>:failed to init cam device "<<this->m_devName;
-        return;
-    }
-    if(camDev->ZInitMAP()<0)
-    {
-        qDebug()<<"<error>:failed to init map device "<<this->m_devName;
-        return;
-    }
-    //malloc memory.
-    qint32 nSingleImgSize=camDev->ZGetImgWidth()*camDev->ZGetImgHeight()*3*sizeof(char);
-    unsigned char *pRGBBuffer=(unsigned char*)malloc(nSingleImgSize);
-    if(NULL==pRGBBuffer)
-    {
-        qDebug()<<"<error>:failed to allocate RGB buffer for device "<<this->m_devName;
-        return;
-    }
-    //start capture.
-    if(camDev->ZStartCapture()<0)
-    {
-        qDebug()<<"<error>:failed to start capture "<<this->m_devName;
-        return;
-    }
-
-    qDebug()<<"<MainLoop>:ImgCapThread "<<this->m_devName<<" starts.";
-    while(!gGblPara.m_bGblRst2Exit)
-    {
-        qint32 nLen;
-        qint64 nStartTs,nEndTs;
-        unsigned char *pYUVData;
-        if(gGblPara.m_bCaptureLog)
+    do{
+        if(this->m_cam->ZOpenCAM()<0)
         {
-            nStartTs=QDateTime::currentDateTime().toMSecsSinceEpoch();
-            qDebug()<<"<TS>:"<<this->m_devName<<" start at "<<nStartTs;
-        }
-        if(camDev->ZGetFrame((void**)&pYUVData,(size_t*)&nLen)<0)
-        {
-            qDebug()<<"<error>:failed to get yuv data from "<<this->m_devName;
+            emit this->ZSigMsg(tr("failed to open video device %1").arg(this->m_devName),Log_Msg_Error);
             break;
         }
-        //qDebug()<<"get yuv len:"<<nLen;
-#if 1
-        //if I am the main camera,put yuv data to yuv queue.
-        if(this->m_bMainCamera)
+        if(this->m_cam->ZInitCAM()<0)
         {
-            QByteArray baYUVData((const char*)pRGBBuffer,nLen);
-            this->m_semaYUVFree->acquire();//空闲信号量减1.
-            this->m_queueYUV->enqueue(baYUVData);
-            this->m_semaYUVUsed->release();//已用信号量加1.
+            emit this->ZSigMsg(tr("failed to init device %1").arg(this->m_devName),Log_Msg_Error);
+            break;
         }
-#endif
-        //convert yuv to RGB.
-        YUYVToRGB_table(pYUVData,pRGBBuffer,camDev->ZGetImgWidth(),camDev->ZGetImgHeight());
-        //build a RGB888 QImage object.
-        QImage newQImg((uchar*)pRGBBuffer,camDev->ZGetImgWidth(),camDev->ZGetImgHeight(),QImage::Format_RGB888);
-        //free a buffer for device.
-        camDev->ZUnGetFrame();
-
-        if(gGblPara.m_bCaptureLog)
+        if(this->m_cam->ZInitMAP()<0)
         {
-            nEndTs=QDateTime::currentDateTime().toMSecsSinceEpoch();
-            qDebug()<<"<TS>:"<<this->m_devName<<" end at "<<nEndTs<<",cost "<<nEndTs-nStartTs<<"ms";
+            emit this->ZSigMsg(tr("failed to init map device:%1.").arg(this->m_devName),Log_Msg_Error);
+            break;
         }
-
-        //put QImage to QImage queue for ImgProcessThread.
-        if(this->m_semaProcessFree->tryAcquire())//空闲信号量减1.
+        //if user only wants to dump camera info to file.
+        //then we donot start capture.
+        if(gGblPara.m_bDumpCamInfo2File)
         {
-            this->m_queueProcess->enqueue(newQImg);
-            this->m_semaProcessUsed->release();//已用信号量加1.
-        }
+            //we only dump camera info to file and then quit.
+            break;
+        }else{
+            //malloc memory.
+            qint32 nSingleImgSize=this->m_cam->ZGetImgWidth()*this->m_cam->ZGetImgHeight()*3*sizeof(char);
+            if(NULL==(this->m_pImgData=(unsigned char*)malloc(nSingleImgSize)))
+            {
+                emit this->ZSigMsg(tr("failed to malloc memory!"),Log_Msg_Error);
+                break;
+            }
+            //start capture.
+            if(this->m_cam->ZStartCapture()<0)
+            {
+                emit this->ZSigMsg(tr("failed to start capture!"),Log_Msg_Error);
+                break;
+            }
 
-        //put QImage to local queue for LocalDisplay.
-        if(this->m_semaDispFree->tryAcquire())//空闲信号量减1.
-        {
-            this->m_queueDisp->enqueue(newQImg);
-            this->m_semaDispUsed->release();//已用信号量加1.
-        }
+            //start schedule timer.
+            this->m_timerCap=new QTimer;
+            QObject::connect(this->m_timerCap,SIGNAL(timeout()),this,SLOT(ZSlotDoCapture()),Qt::DirectConnection);
+            //do not start at default.
+            //wait for uart command :start/stop.
+            //this->m_timerCap->start(10);
+            this->m_timerCtl=new QTimer;
+            QObject::connect(this->m_timerCtl,SIGNAL(timeout()),this,SLOT(ZSlotCheckGblStartFlag()),Qt::DirectConnection);
+            this->m_timerCtl->start(1000);//1s.
 
-        usleep(1000*30);//30ms.
-    }
-    //do some clean. stop camera.
-    camDev->ZStopCapture();
-    camDev->ZUnInitCAM();
-    camDev->ZCloseCAM();
+            //set flag.
+            this->m_bRunning=true;
+            //enter event-loop until exit() was called.
+            this->exec();
+
+            this->m_timerCtl->stop();
+            delete this->m_timerCtl;
+
+            this->m_timerCap->stop();
+            delete this->m_timerCap;
+        }
+    }while(0);
+
+    //here we set global request exit flag to help other thread to exit.
+    gGblPara.m_bGblRst2Exit=true;
+
+    //stop camera.
+    this->m_cam->ZStopCapture();
+    this->m_cam->ZUnInitCAM();
+    this->m_cam->ZCloseCAM();
     //free memory.
-    free(pRGBBuffer);
-    qDebug()<<"<MainLoop>:ImgCapThread "<<this->m_devName<<" ends.";
-    //set flags to help other threads to exit normally.
-    if(this->m_bMainCamera)
+    if(this->m_pImgData)
     {
-        gGblPara.m_bMainCapThreadExitFlag=true;
-    }else{
-        gGblPara.m_bAuxCapThreadExitFlag=true;
+        free(this->m_pImgData);
+        this->m_pImgData=NULL;
     }
+    qDebug()<<"thread "<<this->m_devName<<" exit okay.";
+    //set flags.
+    this->m_bRunning=false;
     emit this->ZSigThreadFinished();
+}
+qint32 ZImgCapThread::convYUV2RGBPixel(qint32 y,qint32 u,qint32 v)
+{
+    unsigned int pixel32 = 0;
+    unsigned char *pixel = (unsigned char *)&pixel32;
+    int r, g, b;
+    r = y + (1.370705 * (v-128));
+    g = y - (0.698001 * (v-128)) - (0.337633 * (u-128));
+    b = y + (1.732446 * (u-128));
+    if(r > 255) r = 255;
+    if(g > 255) g = 255;
+    if(b > 255) b = 255;
+    if(r < 0) r = 0;
+    if(g < 0) g = 0;
+    if(b < 0) b = 0;
+    pixel[0] = r * 220 / 256;
+    pixel[1] = g * 220 / 256;
+    pixel[2] = b * 220 / 256;
+    return pixel32;
+}
+qint32 ZImgCapThread::convYUV2RGBBuffer(unsigned char *yuv,unsigned char *rgb,unsigned int width,unsigned int height)
+{
+    unsigned int in, out = 0;
+    unsigned int pixel_16;
+    unsigned char pixel_24[3];
+    unsigned int pixel32;
+    int y0, u, y1, v;
+    for(in = 0; in < width * height * 2; in += 4) {
+        pixel_16 =yuv[in + 3] << 24 |yuv[in + 2] << 16 |yuv[in + 1] <<  8 |yuv[in + 0];
+        y0 = (pixel_16 & 0x000000ff);
+        u  = (pixel_16 & 0x0000ff00) >>  8;
+        y1 = (pixel_16 & 0x00ff0000) >> 16;
+        v  = (pixel_16 & 0xff000000) >> 24;
+        pixel32 = this->convYUV2RGBPixel(y0, u, v);
+        pixel_24[0] = (pixel32 & 0x000000ff);
+        pixel_24[1] = (pixel32 & 0x0000ff00) >> 8;
+        pixel_24[2] = (pixel32 & 0x00ff0000) >> 16;
+        rgb[out++] = pixel_24[0];
+        rgb[out++] = pixel_24[1];
+        rgb[out++] = pixel_24[2];
+        pixel32 = this->convYUV2RGBPixel(y1, u, v);
+        pixel_24[0] = (pixel32 & 0x000000ff);
+        pixel_24[1] = (pixel32 & 0x0000ff00) >> 8;
+        pixel_24[2] = (pixel32 & 0x00ff0000) >> 16;
+        rgb[out++] = pixel_24[0];
+        rgb[out++] = pixel_24[1];
+        rgb[out++] = pixel_24[2];
+    }
+    return 0;
 }

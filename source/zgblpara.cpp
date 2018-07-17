@@ -14,16 +14,11 @@ ZGblPara::ZGblPara()
     this->m_bTransfer2PC=false;
     this->m_bTransferSpeedMonitor=false;
     this->m_bDumpUART=false;
-    //default xMode is on.fMode is off.
-    this->m_bXMode=true;
+    this->m_bXMode=false;
     this->m_bFMode=false;
 
     this->m_bGblRst2Exit=false;
     this->m_bGblStartFlag=false;
-
-
-    this->m_bMainCapThreadExitFlag=false;
-    this->m_bAuxCapThreadExitFlag=false;
 }
 ZGblPara::~ZGblPara()
 {

@@ -4,15 +4,21 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QPainter>
+#ifdef BUILD_GUI
 #include <QApplication>
 ZMainTask::ZMainTask(QWidget *parent) : QFrame(parent)
 {
-
+#else
+#include <QCoreApplication>
+ZMainTask::ZMainTask(QObject *parent) : QObject(parent)
+{
+#endif
     this->m_cap1=NULL;
     this->m_cap2=NULL;
     this->m_process=NULL;
     this->m_video2PC=NULL;
 
+#ifdef BUILD_GUI
     this->m_llDiffXY=new QLabel;
     this->m_llDiffXY->setAlignment(Qt::AlignCenter);
     this->m_llDiffXY->setText(tr("Diff XYT\n[X:0 Y:0 T:0ms]"));
@@ -58,11 +64,7 @@ ZMainTask::ZMainTask(QWidget *parent) : QFrame(parent)
     this->m_timer=new QTimer;
     QObject::connect(this->m_timer,SIGNAL(timeout()),this,SLOT(ZSlot1sTimeout()));
     this->m_timer->start(1000);
-
-    //fetch processed set timer.
-    this->m_timerDispatch=new QTimer;
-    QObject::connect(this->m_timerDispatch,SIGNAL(timeout()),this,SLOT(ZSlotDispatchProcessedSet()));
-    this->m_timerDispatch->start(20);
+#endif
 }
 ZMainTask::~ZMainTask()
 {
@@ -92,6 +94,7 @@ ZMainTask::~ZMainTask()
         delete this->m_cap2;
     }
 
+#ifdef BUILD_GUI
     delete this->m_llDiffXY;
     delete this->m_llRunSec;
     delete this->m_llState;
@@ -105,213 +108,147 @@ ZMainTask::~ZMainTask()
 
     this->m_timer->stop();
     delete this->m_timer;
+#endif
 }
-qint32 ZMainTask::ZStartTask()
+qint32 ZMainTask::ZDoInit()
 {
-    ZFilteCAMDev filteCAMDev;
-    QStringList lstRealDev=filteCAMDev.ZGetCAMDevList();
-    if(lstRealDev.size()<2)
-    {
+    do{
+        ZFilteCAMDev filteCAMDev;
+        QStringList lstRealDev=filteCAMDev.ZGetCAMDevList();
+        if(lstRealDev.size()<2)
+        {
+            if(gGblPara.m_bVerbose)
+            {
+                qDebug()<<"<error>:cannot find two video node!";
+            }
+            break;
+        }
+
+        //start cap thread.
+        QString cam1Device("/dev/"+lstRealDev.at(0));
+        QString cam2Device("/dev/"+lstRealDev.at(1));
         if(gGblPara.m_bVerbose)
         {
-            qDebug()<<"<error>:cannot find two video node!";
+            QString msgVerbose=QString("camera 1=%1,camera 2=%2").arg(cam1Device).arg(cam2Device);
+            this->ZSlotMsg(msgVerbose,Log_Msg_Info);
         }
-        return -1;
-    }
+        this->m_cap1=new ZImgCapThread(cam1Device,gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1);
+        this->m_cap2=new ZImgCapThread(cam2Device,gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2);
+        this->m_process=new ZImgProcessThread;
+        QString cap1ID=this->m_cap1->ZGetCAMID();
+        QString cap2ID=this->m_cap2->ZGetCAMID();
+        if(cap1ID==gGblPara.m_idCAM1 && cap2ID==gGblPara.m_idCAM2)
+        {
+#ifdef BUILD_GUI
+            this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);//main camera.
+            this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);
 
-    //start cap thread.
-    QString cam1Device("/dev/"+lstRealDev.at(0));
-    QString cam2Device("/dev/"+lstRealDev.at(1));
-    if(gGblPara.m_bVerbose)
-    {
-        QString msgVerbose=QString("camera 1=%1,camera 2=%2").arg(cam1Device).arg(cam2Device);
-        this->ZSlotMsg(msgVerbose,Log_Msg_Info);
-    }
+            if(gGblPara.m_bFMode)
+            {
+                //F mode.
+                QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }else{
+                //X mode.
+                QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }
+#endif
+            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
+            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
+        }else if(cap1ID==gGblPara.m_idCAM2 && cap2ID==gGblPara.m_idCAM1){
+#ifdef BUILD_GUI
+            this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);//main camera.
+            this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);
 
-    /////////////////////////////the main camera queue///////////////////////////
-    //main capture thread to local display queue.
-    this->m_queueMainDisp=new QQueue<QImage>;
-    this->m_semaMainDispUsed=new QSemaphore(0);
-    this->m_semaMainDispFree=new QSemaphore(150);//30fps,5sec.
-    //main capture thread to img process queue.
-    this->m_queueMainProcess=new QQueue<QImage>;
-    this->m_semaMainProcessUsed=new QSemaphore(0);
-    this->m_semaMainProcessFree=new QSemaphore(150);//30fps,5sec.
-    //main capture thread to yuv queue.
-    this->m_queueYUV=new QQueue<QByteArray>;
-    this->m_semaYUVUsed=new QSemaphore(0);
-    this->m_semaYUVFree=new QSemaphore(150);
+            if(gGblPara.m_bFMode)
+            {
+                //F mode.
+                QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }else{
+                //X mode.
+                QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }
+#endif
+            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
+            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
+        }else{ //anyway here.
+#ifdef BUILD_GUI
+            this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);//main camera.
+            this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);
 
-    ////////////////////////////////the aux camera queue///////////////////////////
-    //aux capture thread to local display queue.
-    this->m_queueAuxDisp=new QQueue<QImage>;
-    this->m_semaAuxDispUsed=new QSemaphore(0);
-    this->m_semaAuxDispFree=new QSemaphore(150);
-    //aux capture thread to img process queue.
-    this->m_queueAuxProcess=new QQueue<QImage>;
-    this->m_semaAuxProcessUsed=new QSemaphore(0);
-    this->m_semaAuxProcessFree=new QSemaphore(150);
+            if(gGblPara.m_bFMode)
+            {
+                //F mode.
+                QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }else{
+                //X mode.
+                QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
+                QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
+            }
+#endif
+            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
+            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
+        }
 
-    ///////////////////////////////*h264 encode result queue/////////////////////////////
-    this->m_queueH264=new QQueue<QByteArray>;
-    this->m_semaH264Used=new QSemaphore(0);
-    this->m_semaH264Free=new QSemaphore(150);
+        //safety thread exit mechanism.
+        connect(this->m_cap1,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
+        connect(this->m_cap2,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
+        connect(this->m_process,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
 
-    /////////////////////////img process thread result queue/////////////////////////
-    this->m_queueProcessedSet=new QQueue<ZImgProcessedSet>;
-    this->m_semaProcessedSetUsed=new QSemaphore(0);
-    this->m_semaProcessedSetFree=new QSemaphore(150);
-
-    //bind queue to local display.
-    this->m_disp[0]->ZBindQueue(this->m_queueMainDisp,this->m_semaMainDispUsed,this->m_semaMainDispFree);
-    this->m_disp[1]->ZBindQueue(this->m_queueAuxDisp,this->m_semaAuxDispUsed,this->m_semaAuxDispFree);
-
-    //create capture thread.
-    this->m_cap1=new ZImgCapThread(cam1Device,gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,true);//Main Camera.
-    this->m_cap1->ZBindDispQueue(this->m_queueMainDisp,this->m_semaMainDispUsed,this->m_semaMainDispFree);
-    this->m_cap1->ZBindProcessQueue(this->m_queueMainProcess,this->m_semaMainProcessUsed,this->m_semaMainProcessFree);
-    this->m_cap1->ZBindYUVQueue(this->m_queueYUV,this->m_semaYUVUsed,this->m_semaYUVFree);
-
-    this->m_cap2=new ZImgCapThread(cam2Device,gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,false);
-    this->m_cap2->ZBindDispQueue(this->m_queueAuxDisp,this->m_semaAuxDispUsed,this->m_semaAuxDispFree);
-    this->m_cap2->ZBindProcessQueue(this->m_queueAuxProcess,this->m_semaAuxProcessUsed,this->m_semaAuxProcessFree);
-
-    //create h264 encode thread.
-    this->m_h264Thread=new ZH264EncThread;
-    this->m_h264Thread->ZBindYUVQueue(this->m_queueYUV,this->m_semaYUVUsed,this->m_semaYUVFree);
-    this->m_h264Thread->ZBindH264Queue(this->m_queueH264,this->m_semaH264Used,this->m_semaH264Free);
-
-    //create image process thread.
-    this->m_process=new ZImgProcessThread;
-    this->m_process->ZBindMainQueue(this->m_queueMainProcess,this->m_semaMainProcessUsed,this->m_semaMainProcessFree);
-    this->m_process->ZBindAuxQueue(this->m_queueAuxProcess,this->m_semaAuxProcessUsed,this->m_semaAuxProcessFree);
-    this->m_process->ZBindProcessedSetQueue(this->m_queueProcessedSet,this->m_semaProcessedSetUsed,this->m_semaProcessedSetFree);
+        //display all log messages on the main windows's text edit.
+        connect(this->m_cap1,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
+        connect(this->m_cap2,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
+        connect(this->m_process,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
 
 
-    //start h264 thread.
-    this->m_h264Thread->ZStartThread();
+        connect(this->m_process,SIGNAL(ZSigDiffXYT(QRect,QRect,qint32,qint32,qint32)),this,SLOT(ZSlotDiffXYT(QRect,QRect,qint32,qint32,qint32)));
+        connect(this->m_process,SIGNAL(ZSigSSIMImgSimilarity(qint32)),this,SLOT(ZSlotSSIMImgSimilarity(qint32)));
+#if 0
+        //we make sure the image1 is bigger than image2.
+        qint32 nImage1Size=this->m_cap1->ZGetCAMImgWidth()*this->m_cap1->ZGetCAMImgHeight();
+        qint32 nImage2Size=this->m_cap2->ZGetCAMImgWidth()*this->m_cap2->ZGetCAMImgHeight();
+        if(nImage1Size>=nImage2Size)
+        {
+            this->ZSlotMsg(tr("%1 > %2 , use %1 as main camera.")///<
+                           .arg(this->m_cap1->ZGetDevName())//<
+                           .arg(this->m_cap2->ZGetDevName())///<
+                           .arg(this->m_cap1->ZGetDevName()),Log_Msg_Info);
 
-    //start img process thread.
-    this->m_process->ZStartThread();
+            //Capture thread to ImgProcess thread vector.
+            connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
+            connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
+        }else{
+            this->ZSlotMsg(tr("%1 > %2 , use %1 as main camera.")///<
+                           .arg(this->m_cap2->ZGetDevName())///<
+                           .arg(this->m_cap1->ZGetDevName())///<
+                           .arg(this->m_cap2->ZGetDevName()),Log_Msg_Info);
+            //Capture thread to ImgProcess thread vector.
+            connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
+            connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
+        }
+#endif
 
-    //start capture thread.
-    this->m_cap1->ZStartThread();
-    this->m_cap2->ZStartThread();
+        //transfer video to pc through UDT.
+        if(gGblPara.m_bTransfer2PC)
+        {
+            this->m_video2PC=new ZServerThread(this->m_process);
+            connect(this->m_video2PC,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
+            this->m_video2PC->ZStartThread();
+        }
 
+        //start img process thread.
+        this->m_process->ZStartThread();
+        //start img capture thread.
+        this->m_cap1->ZStartThread();
+        this->m_cap2->ZStartThread();
+
+        return 0;
+    }while(0);
     return 0;
-#if 0
-    this->m_process=new ZImgProcessThread;
-    QString cap1ID=this->m_cap1->ZGetCAMID();
-    QString cap2ID=this->m_cap2->ZGetCAMID();
-    if(cap1ID==gGblPara.m_idCAM1 && cap2ID==gGblPara.m_idCAM2)
-    {
-        this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);//main camera.
-        this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);
-
-        if(gGblPara.m_bFMode)
-        {
-            //F mode.
-            QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }else{
-            //X mode.
-            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }
-
-        QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
-        QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
-    }else if(cap1ID==gGblPara.m_idCAM2 && cap2ID==gGblPara.m_idCAM1){
-
-        this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);//main camera.
-        this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);
-
-        if(gGblPara.m_bFMode)
-        {
-            //F mode.
-            QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }else{
-            //X mode.
-            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }
-
-        QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
-        QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
-    }else{ //anyway here.
-
-        this->m_disp[0]->ZSetCAMParameters(gGblPara.m_widthCAM1,gGblPara.m_heightCAM1,gGblPara.m_fpsCAM1,cap1ID);//main camera.
-        this->m_disp[1]->ZSetCAMParameters(gGblPara.m_widthCAM2,gGblPara.m_heightCAM2,gGblPara.m_fpsCAM2,cap2ID);
-
-        if(gGblPara.m_bFMode)
-        {
-            //F mode.
-            QObject::connect(this->m_process,SIGNAL(ZSigObjFeatureKeyPoints(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_process,SIGNAL(ZSigSceneFeatureKeyPoints(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }else{
-            //X mode.
-            QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_disp[0],SLOT(ZSlotDispImg(QImage)));
-            QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_disp[1],SLOT(ZSlotDispImg(QImage)));
-        }
-
-        QObject::connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
-        QObject::connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
-    }
-
-    //safety thread exit mechanism.
-    connect(this->m_cap1,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
-    connect(this->m_cap2,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
-    connect(this->m_process,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
-
-    //display all log messages on the main windows's text edit.
-    connect(this->m_cap1,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
-    connect(this->m_cap2,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
-    connect(this->m_process,SIGNAL(ZSigMsg(QString,qint32)),this,SLOT(ZSlotMsg(QString,qint32)));
-
-
-    connect(this->m_process,SIGNAL(ZSigDiffXYT(QRect,QRect,qint32,qint32,qint32)),this,SLOT(ZSlotDiffXYT(QRect,QRect,qint32,qint32,qint32)));
-    connect(this->m_process,SIGNAL(ZSigSSIMImgSimilarity(qint32)),this,SLOT(ZSlotSSIMImgSimilarity(qint32)));
-#if 0
-    //we make sure the image1 is bigger than image2.
-    qint32 nImage1Size=this->m_cap1->ZGetCAMImgWidth()*this->m_cap1->ZGetCAMImgHeight();
-    qint32 nImage2Size=this->m_cap2->ZGetCAMImgWidth()*this->m_cap2->ZGetCAMImgHeight();
-    if(nImage1Size>=nImage2Size)
-    {
-        this->ZSlotMsg(tr("%1 > %2 , use %1 as main camera.")///<
-                       .arg(this->m_cap1->ZGetDevName())//<
-                       .arg(this->m_cap2->ZGetDevName())///<
-                       .arg(this->m_cap1->ZGetDevName()),Log_Msg_Info);
-
-        //Capture thread to ImgProcess thread vector.
-        connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
-        connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
-    }else{
-        this->ZSlotMsg(tr("%1 > %2 , use %1 as main camera.")///<
-                       .arg(this->m_cap2->ZGetDevName())///<
-                       .arg(this->m_cap1->ZGetDevName())///<
-                       .arg(this->m_cap2->ZGetDevName()),Log_Msg_Info);
-        //Capture thread to ImgProcess thread vector.
-        connect(this->m_cap2,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg1(QImage)));
-        connect(this->m_cap1,SIGNAL(ZSigCapImg(QImage)),this->m_process,SLOT(ZSlotGetImg2(QImage)));
-    }
-#endif
-
-    //transfer video to pc through UDT.
-    if(gGblPara.m_bTransfer2PC)
-    {
-        this->m_video2PC=new ZServerThread(this->m_process);
-        connect(this->m_video2PC,SIGNAL(ZSigThreadFinished()),this,SLOT(ZSlotSubThreadFinished()));
-        this->m_video2PC->ZStartThread();
-    }
-
-    //start img process thread.
-    this->m_process->ZStartThread();
-
-    //start img capture thread.
-    this->m_cap1->ZStartThread();
-    this->m_cap2->ZStartThread();
-#endif
 }
 
 void ZMainTask::ZSlotMsg(const QString &msg,const qint32 &type)
@@ -331,6 +268,14 @@ void ZMainTask::ZSlotMsg(const QString &msg,const qint32 &type)
         qDebug()<<"<unknown>:"<<msg;
         break;
     }
+}
+void ZMainTask::ZSlotDiffXYT(QRect rectTemp,QRect rectMatched,qint32 nDiffX,qint32 nDiffY,qint32 nCostMs)
+{
+#ifdef BUILD_GUI
+    this->m_disp[0]->ZSetSensitiveRect(rectTemp);
+    this->m_disp[1]->ZSetSensitiveRect(rectMatched);
+    this->m_llDiffXY->setText(tr("Diff XYT\n[X:%1 Y:%2 T:%3ms]").arg(nDiffX).arg(nDiffY).arg(nCostMs));
+#endif
 }
 void ZMainTask::ZSlotSSIMImgSimilarity(qint32 nVal)
 {
@@ -404,18 +349,4 @@ void ZMainTask::ZSlotSubThreadFinished()
         }
     }
 }
-void ZMainTask::ZSlotDispatchProcessedSet()
-{
-    //fetch processed set from processedSet queue.
-    //and dispatch them to local two displayer.
-    if(this->m_semaProcessedSetUsed->tryAcquire())//已用信号量减1.
-    {
-        ZImgProcessedSet processSet;
-        processSet=this->m_queueProcessedSet->dequeue();
-        this->m_semaProcessedSetFree->release();//空闲信号量加1.
 
-        this->m_disp[0]->ZSetSensitiveRect(processSet.rectTemplate);
-        this->m_disp[1]->ZSetSensitiveRect(processSet.rectMatched);
-        this->m_llDiffXY->setText(tr("Diff XYT\n[X:%1 Y:%2 T:%3ms]").arg(processSet.nDiffX).arg(processSet.nDiffY).arg(processSet.nCostMs));
-    }
-}

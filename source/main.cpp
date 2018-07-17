@@ -9,7 +9,12 @@
 #include "zhistogram.h"
 #include <QDateTime>
 #include <QSettings>
+#ifdef BUILD_GUI
 #include <QApplication>
+#include <QFontDatabase>
+#else
+#include <QCoreApplication>
+#endif
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <signal.h>
@@ -29,76 +34,97 @@ void gSIGHandler(int sigNo)
 }
 int main(int argc,char **argv)
 {
+#ifdef BUILD_GUI
     QApplication app(argc,argv);
+//    qint32 fontID=QFontDatabase::addApplicationFont(":/font/DejaVuSerif.ttf");
+//    QString fontName=QFontDatabase::applicationFontFamilies(fontID).at(0);
+//    QFont font(fontName);
+//    app.setFont(font);
+#else
+    QCoreApplication app(argc,argv);
+#endif
     //parse command line arguments.
-    QCommandLineOption opDebug("debug","enable debug mode,output more messages.");
-    QCommandLineOption opVerbose("verbose","enable verbose mode.");
-    QCommandLineOption opDumpCamInfo("camInfo","dump camera parameters to file then exit.");
-    QCommandLineOption opCapture("capLog","print capture logs.");
-    QCommandLineOption opTransfer("tx2PC","enable transfer h264 stream to PC.");
-    QCommandLineOption opSpeed("speed","monitor transfer speed.");//-s transfer speed monitor.
-    QCommandLineOption opUART("diffXYT","ouput diff XYT to UART.(x,y) and cost time.");//-y hex uart data.
-    QCommandLineOption opXMode("xMode","enable xMode to matchTemplate.");//-x xMode,resize image to 1/2 before matchTemplate.
-    QCommandLineOption opFMode("fMode","enable fMode to matchTemplate.");//-f fMode,use feature extractor.
-    QCommandLineOption opHelp("help","print this help message.");//-h help.
-    QCommandLineParser cmdLineParser;
-    cmdLineParser.addOption(opDebug);
-    cmdLineParser.addOption(opVerbose);
-    cmdLineParser.addOption(opDumpCamInfo);
-    cmdLineParser.addOption(opCapture);
-    cmdLineParser.addOption(opTransfer);
-    cmdLineParser.addOption(opSpeed);
-    cmdLineParser.addOption(opUART);
-    cmdLineParser.addOption(opXMode);
-    cmdLineParser.addOption(opFMode);
-    cmdLineParser.addOption(opHelp);
-    cmdLineParser.process(app);
+    QCommandLineOption opDebug("d");//-d debug mode.
+    QCommandLineOption opVerbose("v");//-v verbose mode.
+    QCommandLineOption opDumpCamInfo("w");//-w write camera info to file.
+    QCommandLineOption opCapture("c");//-c capture log.
+    QCommandLineOption opTransfer("t");//-t transfer video to pc.
+    QCommandLineOption opSpeed("s");//-s transfer speed monitor.
+    QCommandLineOption opUART("y");//-y hex uart data.
+    QCommandLineOption opXMode("x");//-x xMode,resize image to 1/2 before matchTemplate.
+    QCommandLineOption opFMode("f");//-f fMode,use feature extractor.
+    QCommandLineOption opHelp("h");//-h help.
+    QCommandLineParser parser;
+    parser.addOption(opDebug);
+    parser.addOption(opVerbose);
+    parser.addOption(opDumpCamInfo);
+    parser.addOption(opCapture);
+    parser.addOption(opTransfer);
+    parser.addOption(opSpeed);
+    parser.addOption(opUART);
+    parser.addOption(opXMode);
+    parser.addOption(opFMode);
+    parser.addOption(opHelp);
+    parser.process(app);
 
-    if(cmdLineParser.isSet(opHelp))
+    if(parser.isSet(opHelp))
     {
-        cmdLineParser.showHelp(0);
+        qDebug()<<APPName;
+        qDebug()<<" -d :debug mode.";
+        qDebug()<<" -v :show verbose message.";
+        qDebug()<<" -w :dump camera data to /tmp/videoX file and quit.";
+        qDebug()<<" -c :print capture log.";
+        qDebug()<<" -t :transfer video to pc.";
+        qDebug()<<" -s :transfer speed monitor.";
+        qDebug()<<" -y :hex uart data.";
+        qDebug()<<" -x :xMode,resize images 1/2 before match template.";
+        qDebug()<<" -f :fMode,feature extractor.";
+        qDebug()<<" -h :show help text.";
+        qDebug()<<"Build on "<<QString(__DATE__)<<QString(__TIME__);
+        return 0;
     }
-    if(cmdLineParser.isSet(opDebug))
+    if(parser.isSet(opDebug))
     {
         gGblPara.m_bDebugMode=true;
     }
-    if(cmdLineParser.isSet(opVerbose))
+    if(parser.isSet(opVerbose))
     {
         gGblPara.m_bVerbose=true;
     }
-    if(cmdLineParser.isSet(opDumpCamInfo))
+    if(parser.isSet(opDumpCamInfo))
     {
         gGblPara.m_bDumpCamInfo2File=true;
     }
-    if(cmdLineParser.isSet(opCapture))
+    if(parser.isSet(opCapture))
     {
         gGblPara.m_bCaptureLog=true;
     }
-    if(cmdLineParser.isSet(opSpeed))
+    if(parser.isSet(opTransfer))
     {
-       gGblPara.m_bTransferSpeedMonitor=true;
+        gGblPara.m_bTransfer2PC=true;
+        if(parser.isSet(opSpeed))
+        {
+            gGblPara.m_bTransferSpeedMonitor=true;
+        }
     }
-    if(cmdLineParser.isSet(opTransfer))
+    if(parser.isSet(opUART))
     {
-       gGblPara.m_bTransfer2PC=true;
+        gGblPara.m_bDumpUART=true;
     }
-    if(cmdLineParser.isSet(opUART))
+    if(parser.isSet(opXMode))
     {
-       gGblPara.m_bDumpUART=true;
+        gGblPara.m_bXMode=true;
     }
-    if(cmdLineParser.isSet(opXMode))
+    if(parser.isSet(opFMode))
     {
-       gGblPara.m_bXMode=true;
-    }
-    if(cmdLineParser.isSet(opFMode))
-    {
-       gGblPara.m_bFMode=true;
+        gGblPara.m_bFMode=true;
     }
 
     //这里作一个优先级判断，若xMode和fMode同时启动，则只启动fMode
     if(gGblPara.m_bXMode && gGblPara.m_bFMode)
     {
         gGblPara.m_bXMode=false;
+        gGblPara.m_bFMode=true;
     }
 
     //write pid to file.
@@ -119,20 +145,26 @@ int main(int argc,char **argv)
     }
     gGblPara.readCfgFile();
 
+#if 0
+    cv::Mat mat1 = cv::imread(argv[1], CV_LOAD_IMAGE_COLOR);
+    cv::Mat mat2 = cv::imread(argv[2], CV_LOAD_IMAGE_COLOR);
 
-    ////////////////////////////////////////////////////////
-    qDebug()<<"IMP4ARM Version:"<<APP_VERSION<<" Build on"<<__DATE__<<" "<<__TIME__;
-    if(gGblPara.m_bXMode)
-    {
-        qDebug()<<"XMode Enabled.";
-    }else if(gGblPara.m_bFMode){
-        qDebug()<<"FMode Enabled.";
-    }
-    //install signal handler.
-    signal(SIGINT,gSIGHandler);
+    ZImgProcessThread pp;
+    qint64 tStartMS,tEndMS;
+    
+    //这里直接做图像匹配(就是李老师算法的效果).
+    tStartMS=QDateTime::currentDateTime().toMSecsSinceEpoch();
+    cv::Mat result=pp.ZDoTemplateMatchDirectly(mat1,mat2,true);
+    //emit this->ZSigImgTemplateMatchDirectly(cvMat2QImage(result));
+    tEndMS=QDateTime::currentDateTime().toMSecsSinceEpoch();
+    qDebug()<<"matchTemplate costs:"<<tEndMS-tStartMS<<"(ms)";
+
+    return 0;
+#endif
+
 
     ZMainTask task;
-    if(task.ZStartTask()<0)
+    if(task.ZDoInit()<0)
     {
         if(gGblPara.m_bVerbose)
         {
@@ -140,7 +172,13 @@ int main(int argc,char **argv)
         }
         return -1;
     }
+#ifdef BUILD_GUI
+    //task.showFullScreen();
     task.showMaximized();
+#endif
+
+    //install signal handler.
+    signal(SIGINT,gSIGHandler);
 
     return app.exec();
 }

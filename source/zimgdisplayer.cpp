@@ -8,8 +8,7 @@ ZImgDisplayer::ZImgDisplayer(qint32 nCenterX,qint32 nCenterY,bool bMainCamera,QW
     this->m_nTriggerCounter=0;
     this->m_colorRect=QColor(0,255,0);
     this->m_bMainCamera=bMainCamera;
-    this->m_nSensitiveCenterX=0;
-    this->m_nSensitiveCenterY=0;
+
     //we supply the motor move buttons for SlaveCamera.
     if(!this->m_bMainCamera)
     {
@@ -35,48 +34,38 @@ ZImgDisplayer::ZImgDisplayer(qint32 nCenterX,qint32 nCenterY,bool bMainCamera,QW
             }
         }
     }
-
-    this->m_queue=NULL;
-    this->m_semaUsed=NULL;
-    this->m_semaFree=NULL;
 }
 void ZImgDisplayer::ZSetSensitiveRect(QRect rect)
 {
     this->m_rectSensitive=rect;
-    //scaled rectangle to adapt current window size.
-    this->m_rectSensitiveScaled.setX(this->m_rectSensitive.x()*this->m_fRatioWidth);
-    this->m_rectSensitiveScaled.setY(this->m_rectSensitive.y()*this->m_fRatioHeight);
-    this->m_rectSensitiveScaled.setWidth(this->m_rectSensitive.width()*this->m_fRatioWidth);
-    this->m_rectSensitiveScaled.setHeight(this->m_rectSensitive.height()*this->m_fRatioHeight);
-    //得到区域的中心点坐标.
-    this->m_nSensitiveCenterX=this->m_rectSensitiveScaled.x()+this->m_rectSensitiveScaled.width()/2;
-    this->m_nSensitiveCenterY=this->m_rectSensitiveScaled.y()+this->m_rectSensitiveScaled.height()/2;
+    if(!this->m_bMainCamera)
+    {
+        if(rect==this->m_rectSensitiveOld)
+        {
+            this->m_bStretchFlag=true;
+        }else{
+            this->m_bStretchFlag=false;
+            this->m_rectSensitiveOld=rect;
+        }
+    }else{
+        this->m_rectSensitiveOld=rect;
+    }
 }
 void ZImgDisplayer::ZSetCAMParameters(qint32 nWidth,qint32 nHeight,qint32 nFps,QString camID)
 {
-    this->m_nCAMFps=15;
+    this->m_nCamWidth=nWidth;
+    this->m_nCamHeight=nHeight;
+    this->m_nCAMFps=nFps;
     this->m_camID=camID;
 }
 void ZImgDisplayer::ZSetPaintParameters(QColor colorRect)
 {
     this->m_colorRect=colorRect;
 }
-void ZImgDisplayer::ZBindQueue(QQueue<QImage> *queue,QSemaphore *semaUsed,QSemaphore *semaFree)
-{
-    this->m_queue=queue;
-    this->m_semaUsed=semaUsed;
-    this->m_semaFree=semaFree;
-
-    //start timer.
-    this->m_timer=new QTimer;
-    QObject::connect(this->m_timer,SIGNAL(timeout()),this,SLOT(ZSlotFetchImg()));
-    this->m_timer->start(10);//30ms.
-    return;
-}
-QSize ZImgDisplayer::sizeHint() const
-{
-    return QSize(IMG_SCALED_W,IMG_SCALED_H);
-}
+//QSize ZImgDisplayer::sizeHint() const
+//{
+//    return QSize(IMG_SCALED_W,IMG_SCALED_H);
+//}
 void ZImgDisplayer::resizeEvent(QResizeEvent *event)
 {
     if(!this->m_bMainCamera)
@@ -94,112 +83,25 @@ void ZImgDisplayer::resizeEvent(QResizeEvent *event)
         this->m_tbMotorCtl[2]->move(ptCenter.x()-48,ptCenter.y());//left.
         this->m_tbMotorCtl[3]->move(ptCenter.x()+48,ptCenter.y());//right.
     }
-
-    //摄像头捕获的图像分辨率，这里固定写死。
-    this->m_nCamWidth=640;
-    this->m_nCamHeight=480;
-
-    //    qDebug("window size:%d*%d\n",this->width(),this->height());
-    //    qDebug("cam size:%d*%d\n",this->m_nCamWidth,this->m_nCamHeight);
-
-    //the cross + size,width*height.
-    qint32 nCrossW=20;
-    qint32 nCrossH=20;
-    //the skip pixels,empty black.
-    qint32 nSkipPixels=6;
-
-    //图像因绽放会变形，此处计算出图像变形的x比例,y比例.
-    //根据比较调整要绘制的中心点框线的坐标.
-    //calculate the scale ratio for x.
-    if(this->width()>this->m_nCamWidth)
-    {
-        this->m_fRatioWidth=this->width()/(this->m_nCamWidth*1.0);
-    }else if(this->width()<this->m_nCamWidth)
-    {
-        this->m_fRatioWidth=this->m_nCamWidth/(this->width()*1.0);
-    }else{
-        this->m_fRatioWidth=1.0f;
-    }
-    //calculate the scale ratio for y.
-    if(this->height()>this->m_nCamHeight)
-    {
-        this->m_fRatioHeight=this->height()/(this->m_nCamHeight*1.0);
-    }else if(this->height()<this->m_nCamHeight){
-        this->m_fRatioHeight=this->m_nCamHeight/(this->height()*1.0);
-    }else{
-        this->m_fRatioHeight=1.0f;
-    }
-
-    //clear vector lines.
-    this->m_vecCrossLines.clear();
-
-    //calculate the top part,from top to bottom.
-    //计算左边线的两个端点坐标.
-    QPointF ptTop,ptTop2;
-    if(this->m_nCenterY*this->m_fRatioHeight-nCrossH<0)
-    {
-        //reaches the boundary,no need to draw.
-    }else{
-        ptTop=QPointF(this->m_nCenterX*this->m_fRatioWidth,this->m_nCenterY*this->m_fRatioHeight-nCrossH);
-        ptTop2=QPointF(this->m_nCenterX*this->m_fRatioWidth,this->m_nCenterY*this->m_fRatioHeight-nSkipPixels);
-        this->m_vecCrossLines.append(QLineF(ptTop,ptTop2));
-    }
-
-    //calculate the bottom part,from bottom to top.
-    //计算底边线的两个端点的坐标.
-    QPointF ptBottom,ptBottom2;
-    if(this->m_nCenterY*this->m_fRatioHeight+nCrossH>this->height())
-    {
-        //reaches the boundary,no need to draw.
-    }else{
-        ptBottom=QPointF(this->m_nCenterX*this->m_fRatioWidth,this->m_nCenterY*this->m_fRatioHeight+nCrossH);
-        ptBottom2=QPointF(this->m_nCenterX*this->m_fRatioWidth,this->m_nCenterY*this->m_fRatioHeight+nSkipPixels);
-        this->m_vecCrossLines.append(QLineF(ptBottom,ptBottom2));
-    }
-
-    //draw the left part,from left to right.
-    //计算左边线的两个端点的坐标.
-    QPointF ptLeft,ptLeft2;
-    if(this->m_nCenterX*this->m_fRatioWidth-nCrossW<0)
-    {
-        //reaches the boundary,no need to draw.
-    }else{
-        ptLeft=QPointF(this->m_nCenterX*this->m_fRatioWidth-nCrossW,this->m_nCenterY*this->m_fRatioHeight);
-        ptLeft2=QPointF(this->m_nCenterX*this->m_fRatioWidth-nSkipPixels,this->m_nCenterY*this->m_fRatioHeight);
-        this->m_vecCrossLines.append(QLineF(ptLeft,ptLeft2));
-    }
-
-    //draw the right part.
-    //计算右边线的两个端点的坐标.
-    QPointF ptRight,ptRight2;
-    if(this->m_nCenterX*this->m_fRatioWidth+nCrossW>this->width())
-    {
-        //reaches the boundary,no need to draw.
-    }else{
-        ptRight=QPointF(this->m_nCenterX*this->m_fRatioWidth+nCrossW,this->m_nCenterY*this->m_fRatioHeight);
-        ptRight2=QPointF(this->m_nCenterX*this->m_fRatioWidth+nSkipPixels,this->m_nCenterY*this->m_fRatioHeight);
-        this->m_vecCrossLines.append(QLineF(ptRight,ptRight2));
-    }
-
     QWidget::resizeEvent(event);
 }
-void ZImgDisplayer::ZSlotFetchImg()
+void ZImgDisplayer::ZSlotDispImg(const QImage &img)
 {
-    //paint now.
+    this->m_img=img;
     this->m_nTriggerCounter++;
     this->update();
 }
 void ZImgDisplayer::paintEvent(QPaintEvent *e)
 {
     Q_UNUSED(e);
-
-    QImage newImg;
-    this->m_semaUsed->acquire();//已用信号量减1.
-    newImg=this->m_queue->dequeue();
-    this->m_semaFree->release();//空闲信号量加1.
+    //the cross + size,width*height.
+    qint32 nCrossW=20;
+    qint32 nCrossH=20;
+    //the skip pixels,empty black.
+    qint32 nSkipPixels=6;
 
     QPainter painter(this);
-    if(newImg.isNull())
+    if(this->m_img.isNull())
     {
         painter.fillRect(QRectF(0,0,this->width(),this->height()),Qt::black);
         QPen pen(Qt::green,4);
@@ -208,43 +110,87 @@ void ZImgDisplayer::paintEvent(QPaintEvent *e)
         painter.drawLine(QPointF(this->width(),0),QPointF(0,this->height()));
         return;
     }
-    //draw the image.
-    QRectF rectIMG(0,0,this->width(),this->height());
-    painter.drawImage(rectIMG,newImg);
-
-    //set font & pen.
     QFont tFont=painter.font();
     tFont.setPointSize(16);
     painter.setFont(tFont);
+
+    //draw the image.
+    QRectF rectIMG(0,0,this->width(),this->height());
+    painter.drawImage(rectIMG,this->m_img);
+
     painter.setPen(QPen(Qt::green,3,Qt::SolidLine));
 
-    //将需要绘制的线条集中打包Vector一次性绘制节省时间.
-    //draw the center cross + indicator.
-    painter.drawLines(this->m_vecCrossLines);
-
-    //draw the camera sensitive rectangle.
-    QPen penRect(Qt::red,4,Qt::DashLine);
-    painter.setPen(penRect);
-    painter.drawRect(this->m_rectSensitiveScaled);
-
-    //对于辅助镜头来讲，绘制一条直接从校正坐标原点到匹配到的区域中心点.
-    painter.drawLine(QPointF(this->m_nSensitiveCenterX,this->m_nSensitiveCenterY),QPointF(this->m_nCenterX*this->m_fRatioWidth,this->m_nCenterY*this->m_fRatioHeight));
-
     //draw the camera resolution & fps.
-    //    QString camInfo;
-    //    camInfo.append(tr("%1*%2\n").arg(this->m_nCamWidth).arg(this->m_nCamHeight));
-    //    camInfo.append(tr("%1fps\n").arg(this->m_nCAMFps));
-    //    camInfo.append(QString::number(this->m_nTriggerCounter,10));
-    //    //here plus 10 to avoid last text missing.
-    //    QRect rectCAMInfo(0,0,painter.fontMetrics().width(camInfo)+10,painter.fontMetrics().height()*3);//3 lines.
-    //    painter.drawText(rectCAMInfo,camInfo);
+    QString camInfo;
+    camInfo.append(tr("%1*%2\n").arg(this->m_nCamWidth).arg(this->m_nCamHeight));
+    camInfo.append(tr("%1fps\n").arg(this->m_nCAMFps));
+    camInfo.append(QString::number(this->m_nTriggerCounter,10));
+    //here plus 10 to avoid last text missing.
+    QRect rectCAMInfo(0,0,painter.fontMetrics().width(camInfo)+10,painter.fontMetrics().height()*3);//3 lines.
+    painter.drawText(rectCAMInfo,camInfo);
 
+    //draw the calibrate center (x,y).
 
+    //calculate the scale ratio.
+    float fRatioWidth,fRatioHeight;
+    if(this->width()>this->m_nCamWidth)
+    {
+        fRatioWidth=this->width()/(this->m_nCamWidth*1.0);
+    }else if(this->width()<this->m_nCamWidth)
+    {
+        fRatioWidth=this->m_nCamWidth/(this->width()*1.0);
+    }else{
+        fRatioWidth=1.0f;
+    }
+    if(this->height()>this->m_nCamHeight)
+    {
+        fRatioHeight=this->height()/(this->m_nCamHeight*1.0);
+    }else if(this->height()<this->m_nCamHeight){
+        fRatioHeight=this->m_nCamHeight/(this->height()*1.0);
+    }else{
+        fRatioHeight=1.0f;
+    }
 
-#if 0
-
-
-
+    //draw the top part.
+    QPointF ptTop;
+    if(this->m_nCenterY*fRatioHeight-nCrossH<0)
+    {
+        ptTop=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight);
+    }else{
+        ptTop=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight-nCrossH);
+        QPointF ptTop2(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight-nSkipPixels);
+        painter.drawLine(ptTop,ptTop2);
+    }
+    //draw the bottom part.
+    QPointF ptBottom;
+    if(this->m_nCenterY*fRatioHeight+nCrossH>this->height())
+    {
+        ptBottom=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight);
+    }else{
+        ptBottom=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight+nCrossH);
+        QPointF ptBottom2(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight+nSkipPixels);
+        painter.drawLine(ptBottom2,ptBottom);
+    }
+    //draw the left part.
+    QPointF ptLeft;
+    if(this->m_nCenterX*fRatioWidth-nCrossW<0)
+    {
+        ptLeft=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight);
+    }else{
+        ptLeft=QPointF(this->m_nCenterX*fRatioWidth-nCrossW,this->m_nCenterY*fRatioHeight);
+        QPointF ptLeft2(this->m_nCenterX*fRatioWidth-nSkipPixels,this->m_nCenterY*fRatioHeight);
+        painter.drawLine(ptLeft,ptLeft2);
+    }
+    //draw the right part.
+    QPointF ptRight;
+    if(this->m_nCenterX*fRatioWidth+nCrossW>this->width())
+    {
+        ptRight=QPointF(this->m_nCenterX*fRatioWidth,this->m_nCenterY*fRatioHeight);
+    }else{
+        ptRight=QPointF(this->m_nCenterX*fRatioWidth+nCrossW,this->m_nCenterY*fRatioHeight);
+        QPointF ptRight2(this->m_nCenterX*fRatioWidth+nSkipPixels,this->m_nCenterY*fRatioHeight);
+        painter.drawLine(ptRight2,ptRight);
+    }
     //////////////////////////////////////////////////////////////////////////////////
     //draw the camID.
     qint32 nWidthCAMID=painter.fontMetrics().width(this->m_camID);
@@ -252,8 +198,7 @@ void ZImgDisplayer::paintEvent(QPaintEvent *e)
     //here plus 10 to avoid last text missing.
     QRect rectCAMID(this->width()-nWidthCAMID,this->height()-nHeightCAMID,nWidthCAMID+10,nHeightCAMID);
     painter.drawText(rectCAMID,this->m_camID);
-#endif
-#if 0
+
     //////////////////////////////////////////////////////////////////////////////////
     //if i am the main camera.
     if(this->m_bMainCamera)
@@ -292,7 +237,6 @@ void ZImgDisplayer::paintEvent(QPaintEvent *e)
         painter.drawRect(rectSensitiveRatio);
 
     }else{
-
         //i am the aux camera.
         qint32 nFontHeight=painter.fontMetrics().height();
 
@@ -402,6 +346,5 @@ void ZImgDisplayer::paintEvent(QPaintEvent *e)
         }
 
     }
-#endif
     //////////////////////////////////////////////////////////////////////////////////
 }

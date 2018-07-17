@@ -11,60 +11,14 @@ ZImgProcessThread::ZImgProcessThread()
     this->m_uart=NULL;
     this->m_timerProcess=NULL;
     this->m_bRunning=false;
-
-    this->m_queueMain=NULL;
-    this->m_semaMainUsed=NULL;
-    this->m_semaMainFree=NULL;
-
-    this->m_queueAux=NULL;
-    this->m_semaAuxUsed=NULL;
-    this->m_semaAuxFree=NULL;
-
-    this->m_queueProcessedSet=NULL;
-    this->m_semaProcessedSetUsed=NULL;
-    this->m_semaProcessedSetFree=NULL;
 }
 ZImgProcessThread::~ZImgProcessThread()
 {
-
-}
-qint32 ZImgProcessThread::ZBindMainQueue(QQueue<QImage> *queue,QSemaphore *semaUsed,QSemaphore *semaFree)
-{
-    this->m_queueMain=queue;
-    this->m_semaMainUsed=semaUsed;
-    this->m_semaMainFree=semaFree;
-    return 0;
-}
-qint32 ZImgProcessThread::ZBindAuxQueue(QQueue<QImage> *queue,QSemaphore *semaUsed,QSemaphore *semaFree)
-{
-    this->m_queueAux=queue;
-    this->m_semaAuxUsed=semaUsed;
-    this->m_semaAuxFree=semaFree;
-    return 0;
-}
-qint32 ZImgProcessThread::ZBindProcessedSetQueue(QQueue<ZImgProcessedSet> *queue,QSemaphore *semaUsed,QSemaphore *semaFree)
-{
-    this->m_queueProcessedSet=queue;
-    this->m_semaProcessedSetUsed=semaUsed;
-    this->m_semaProcessedSetFree=semaFree;
-    return 0;
+    this->m_imgVector1.clear();
+    this->m_imgVector2.clear();
 }
 qint32 ZImgProcessThread::ZStartThread()
 {
-    //check main queue.
-    if(this->m_queueMain==NULL || this->m_semaMainUsed==NULL || this->m_semaMainFree==NULL)
-    {
-        qDebug()<<"<error>:no bind main queue,cannot start.";
-        return -1;
-    }
-
-    //check aux queue.
-    if(this->m_queueAux==NULL || this->m_semaAuxUsed==NULL || this->m_semaAuxFree==NULL)
-    {
-        qDebug()<<"<error>:no bind aux main,cannot start.";
-        return -1;
-    }
-
     this->start();
     return 0;
 }
@@ -121,84 +75,6 @@ void ZImgProcessThread::ZSlotSerialPortErr(QSerialPort::SerialPortError err)
 }
 void ZImgProcessThread::run()
 {
-    qDebug()<<"<MainLoop>:ImgProcessThread starts.";
-    while(!gGblPara.m_bGblRst2Exit)
-    {
-        //1.fetch QImage from main queue.
-        QImage imgMain;
-        this->m_semaMainUsed->acquire();//已用信号量减1.
-        imgMain=this->m_queueMain->dequeue();
-        this->m_semaMainFree->release();//空闲信号量加1.
-
-        //2.fetch QImage from aux queue.
-        QImage imgAux;
-        this->m_semaAuxUsed->acquire();//已用信号量减1.
-        imgAux=this->m_queueAux->dequeue();
-        this->m_semaAuxFree->release();//空闲信号量加1.
-
-        //3.将QImage转换为cvMat以方便openCV处理.
-        cv::Mat mat1=QImage2cvMat(imgMain);
-        cv::Mat mat2=QImage2cvMat(imgAux);
-
-        //这里优先启动fMode
-        if(gGblPara.m_bFMode)
-        {
-            //牲征点匹配.
-            cv::Mat mat1Gray,mat2Gray;
-            cv::cvtColor(mat1,mat1Gray,CV_BGR2GRAY);
-            cv::cvtColor(mat2,mat2Gray,CV_BGR2GRAY);
-
-            //cut a 200x200 rectangle.
-            cv::Rect rectObj((mat1Gray.cols-300)/2,(mat1Gray.rows-300)/2,300,300);
-            cv::Mat mat1Cut(mat1Gray,rectObj);
-
-            cv::Mat matObjKp,matSceneKp,matResult;
-            //parameter1 : obj
-            //parameter2: scene.
-            qint32 nRetFDM=this->ZDoFeatureDetectMatch(mat1Cut,mat2Gray,matObjKp,matSceneKp,matResult,rectObj);
-
-            if(gGblPara.m_bFMode && 0==nRetFDM)
-            {
-                //将图像复制到一个图像上
-                //matObjKp.copyTo(mat1Gray(cv::Rect(0,0,300,300)));
-                emit this->ZSigObjFeatureKeyPoints(cvMat2QImage(matObjKp));
-                emit this->ZSigSceneFeatureKeyPoints(cvMat2QImage(matSceneKp));
-            }
-        }else if(gGblPara.m_bXMode)
-        {
-            //模板匹配有2种方法
-            //普通模式作全局匹配，XMode将图像降分辨率后再匹配
-            cv::Mat mat1Gray,mat2Gray;
-            cv::cvtColor(mat1,mat1Gray,CV_BGR2GRAY);
-            cv::cvtColor(mat2,mat2Gray,CV_BGR2GRAY);
-            //resize image to 1/2.
-            cv::Mat mat1GrayResize,mat2GrayResize;
-            cv::resize(mat1Gray,mat1GrayResize,cv::Size(mat1.cols/2,mat1.rows/2));
-            cv::resize(mat2Gray,mat2GrayResize,cv::Size(mat2.cols/2,mat2.rows/2));
-
-            //如果命令行参数-x启用了XMode
-            //则将图像做1/2缩小，然后比对，这样可以大大节省时间
-            //同时校准中心点(x,y)分别也做(x/2,y/2）
-            //同时裁剪尺寸(w,h)分别也做1/2处理（w/2,h/2)
-            //这样做完matchTemplate后，再将最合适的匹配点坐标再乘以2,
-            //然后在原图未绽放的图像上画矩形框
-            this->ZDoTemplateMatchResize(mat1GrayResize,mat2GrayResize,true);
-
-            //这里做PSNR/SSIM算法来评估图像相似度
-            //SSIM适合2个内容完全一样，但模糊度，噪声水平等不同的图片进行相似度估计
-            this->ZDoPSNRAndSSIM(mat1GrayResize,mat2GrayResize);
-        }else{
-            //直接从图像1中以校准中心点为中心，截取一块矩形区域
-            //然后从图像2中全局匹配该区域
-            this->ZDoTemplateMatchDirectly(mat1,mat2,true);
-
-            //这里做PSNR/SSIM算法来评估图像相似度
-            this->ZDoPSNRAndSSIM(mat1,mat2);
-        }
-        //qDebug()<<"processed 2 images.";
-    }
-    qDebug()<<"<MainLoop>:ImgProcessThread ends.";
-#if 0
     do{
         if(gGblPara.m_bDumpUART)
         {
@@ -252,9 +128,7 @@ void ZImgProcessThread::run()
     //set flag.
     this->m_bRunning=false;
     emit this->ZSigThreadFinished();
-#endif
 }
-#if 0
 void ZImgProcessThread::ZSlotCheckGblStartFlag()
 {
     if(gGblPara.m_bGblStartFlag)
@@ -511,7 +385,6 @@ void ZImgProcessThread::ZSlotScheduleTask()
     //    this->m_histogram=NULL;
     //    this->exit(0);
 }
-#endif
 void ZImgProcessThread::ZSlotReadUARTData()
 {
     qDebug()<<"got uart data:"<<this->m_uart->bytesAvailable();
@@ -540,7 +413,37 @@ void ZImgProcessThread::ZSlotReadUARTData()
         this->m_baUARTRecvBuf.clear();
     }
 }
-
+void ZImgProcessThread::ZSlotDelayStart()
+{
+    //set global start flag
+    gGblPara.m_bGblStartFlag=true;
+}
+void ZImgProcessThread::ZSlotGetImg1(const QImage &img)
+{
+    this->m_mux1.lock();
+    if(this->m_imgVector1.size()>=30)
+    {
+        this->m_imgVector1.removeFirst();
+        //qDebug()<<"remove img from vector1";
+        //emit this->ZSigMsg(tr("Vector1 is full,remove first!"),Log_Msg_Warning);
+    }
+    this->m_imgVector1.append(img);
+    //    qDebug()<<"put imag1 to vector";
+    this->m_mux1.unlock();
+}
+void ZImgProcessThread::ZSlotGetImg2(const QImage &img)
+{
+    this->m_mux2.lock();
+    if(this->m_imgVector2.size()>=30)
+    {
+        this->m_imgVector2.removeFirst();
+        //qDebug()<<"remove img from vector2";
+        //emit this->ZSigMsg(tr("Vector2 is full,remove first!"),Log_Msg_Warning);
+    }
+    this->m_imgVector2.append(img);
+    //    qDebug()<<"put imag2 to vector";
+    this->m_mux2.unlock();
+}
 //execute template directly without any processing.
 void ZImgProcessThread::ZDoTemplateMatchDirectly(const cv::Mat &mat1,const cv::Mat mat2,const bool bTreatAsGray)
 {
@@ -744,19 +647,8 @@ void ZImgProcessThread::ZDoTemplateMatchResize(const cv::Mat &mat1,const cv::Mat
 
     nDiffX=gGblPara.m_calibrateX2/2-(ptMatched.x+rectTemplate.width/2);
     nDiffY=gGblPara.m_calibrateY2/2-(ptMatched.y+rectTemplate.height/2);
-    //emit this->ZSigDiffXYT(rectTemp,rectMatch,nDiffX*2,nDiffY*2,nEndMS-nStartMS);
-    //将计算结果投入processedSet队列中.
-    ZImgProcessedSet newProcessedSet;
-    newProcessedSet.rectTemplate=rectTemp;
-    newProcessedSet.rectMatched=rectMatch;
-    newProcessedSet.nDiffX=nDiffX*2;
-    newProcessedSet.nDiffY=nDiffY*2;
-    newProcessedSet.nCostMs=nEndMS-nStartMS;
-    this->m_semaProcessedSetFree->acquire();//空闲信号量减1.
-    this->m_queueProcessedSet->enqueue(newProcessedSet);
-    this->m_semaProcessedSetUsed->release();//已用信号量加1.
+    emit this->ZSigDiffXYT(rectTemp,rectMatch,nDiffX*2,nDiffY*2,nEndMS-nStartMS);
 
-    //qDebug()<<"put processed set.";
     //dump diff x&y to tty UART.
     if(gGblPara.m_bDumpUART)
     {

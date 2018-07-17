@@ -16,20 +16,12 @@
 #include <QtSerialPort/QSerialPort>
 #include <QTimer>
 
-#include <QQueue>
-#include <QSemaphore>
-#include <QByteArray>
-
-
 class ZImgProcessThread : public QThread
 {
     Q_OBJECT
 public:
     ZImgProcessThread();
     ~ZImgProcessThread();
-    qint32 ZBindMainQueue(QQueue<QImage> *queue,QSemaphore *semaUsed,QSemaphore *semaFree);
-    qint32 ZBindAuxQueue(QQueue<QImage> *queue,QSemaphore *semaUsed,QSemaphore *semaFree);
-    qint32 ZBindProcessedSetQueue(QQueue<ZImgProcessedSet> *queue,QSemaphore *semaUsed,QSemaphore *semaFree);
     qint32 ZStartThread();
     qint32 ZStopThread();
     bool ZIsRunning();
@@ -49,8 +41,14 @@ signals:
     void ZSigObjFeatureKeyPoints(QImage img);
     void ZSigSceneFeatureKeyPoints(QImage img);
 public slots:
+    void ZSlotGetImg1(const QImage &img);
+    void ZSlotGetImg2(const QImage &img);
     void ZSlotSerialPortErr(QSerialPort::SerialPortError err);
     void ZSlotReadUARTData();
+    void ZSlotCheckGblStartFlag();
+    void ZSlotDelayStart();
+private slots:
+    void ZSlotScheduleTask();
 public:
     //execute template directly without any processing.
     void ZDoTemplateMatchDirectly(const cv::Mat &mat1,const cv::Mat mat2,const bool bTreatAsGray=false);
@@ -86,6 +84,9 @@ private:
     //do gray histogram compare.
     qint32 ZDoHistogramCompare(const cv::Mat &mat1,const cv::Mat &mat2);
 private:
+    QVector<QImage> m_imgVector1;
+    QVector<QImage> m_imgVector2;
+private:
     ZHistogram *m_histogram;
 private:
     bool m_bExit;
@@ -113,20 +114,6 @@ private:
 private:
     QTimer *m_timerCtl;
     QByteArray m_baUARTRecvBuf;
-
-private:
-    QQueue<QImage> *m_queueMain;
-    QSemaphore *m_semaMainUsed;
-    QSemaphore *m_semaMainFree;
-
-    QQueue<QImage> *m_queueAux;
-    QSemaphore *m_semaAuxUsed;
-    QSemaphore *m_semaAuxFree;
-
-private:
-    QQueue<ZImgProcessedSet> *m_queueProcessedSet;
-    QSemaphore *m_semaProcessedSetUsed;
-    QSemaphore *m_semaProcessedSetFree;
 };
 
 #endif // ZIMGPROCESSTHREAD_H

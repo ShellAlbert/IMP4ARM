@@ -5,10 +5,17 @@
 #include <opencv2/imgproc.hpp>
 #include <QtGui/QImage>
 
-#define APP_VERSION "0.1.0" //2018/07/10.
+#define BUILD_GUI    1
+
+#ifdef BUILD_GUI
+#define APPName "IMP4ARM V0.1 GUI Mode"
+#else
+#define APPName "IMP4ARM V0.1 Console Mode"
+#endif
 
 #define DRW_IMG_SIZE_W  500
 #define DRW_IMG_SIZE_H  500
+
 
 
 //#define USE_TCP 1
@@ -72,13 +79,10 @@ public:
     //it will be set every thread occurs errors.
     bool m_bGblRst2Exit;
 
+
 public:
     //global start or stop flag.
     bool m_bGblStartFlag;
-
-public:
-    bool m_bMainCapThreadExitFlag;
-    bool m_bAuxCapThreadExitFlag;
 };
 extern ZGblPara gGblPara;
 extern cv::Mat QImage2cvMat(const QImage &img);
@@ -89,15 +93,4 @@ typedef int LogMsgType;
 #define Log_Msg_Info 0 //general msg.
 #define Log_Msg_Warning 1 //warning msg.
 #define Log_Msg_Error 2 //error msg.
-
-class ZImgProcessedSet
-{
-public:
-    QRect rectTemplate;
-    QRect rectMatched;
-    qint32 nDiffX;
-    qint32 nDiffY;
-    qint32 nCostMs;
-};
-
 #endif // ZGBLPARA_H
